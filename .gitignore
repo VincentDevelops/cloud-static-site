@@ -1,0 +1,19 @@
+# Hugo build output
+/public/
+/resources/_gen/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# IDE/editor folders
+.vscode/
+.idea/
+
+# Dependency/package files (if experimenting with Node-based tooling later)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Log files
+*.log
