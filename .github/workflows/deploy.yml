@@ -1,52 +1,96 @@
-name: Deploy Hugo site to VPS
+name: Deploy static site to EC2 via S3 + SSM
 
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+  pull_request:
+    branches: [ "main" ]
+    types: [ closed ]   # run when PRs to main are closed (merged)
 
 concurrency:
   group: deploy-prod
-  cancel-in-progress: false
+  cancel-in-progress: true
 
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ${{ secrets.AWSRegion }}            # or use repo/environment Variables
+  S3_BUCKET: ${{ secrets.S3BucketName }}          # bucket name isn’t sensitive; a Variable is fine too
+  S3_PREFIX: site/prod/current                    # path inside the bucket; not a secret
+  DOCROOT: /var/www/vincentdevelops.com
+  ROLE_TO_ASSUME: ${{ secrets.AWSAssumedRole }}   # arn:aws:iam::<acct>:role/github-actions
+  EC2_INSTANCE_ID: ${{ secrets.AWSInstanceID }}  # or target by tag instead
+  HUGO_VERSION: "0.151.0"                         # pin to match your local Hugo
+ 
 jobs:
   deploy:
-    runs-on: ubuntu-22.04
-
-    defaults:
-      run:
-        working-directory: ./hugo/vincentdevelops
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    environment: production
+    name: Build → S3 → SSM sync
 
     steps:
-      - name: Check out repo
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: false # true if using a submodule theme
 
-      - name: Set up Hugo (extended)
+      - name: Install Hugo (extended)
         uses: peaceiris/actions-hugo@v3
         with:
-          hugo-version: 'latest'
+          hugo-version: ${{ env.HUGO_VERSION }}
           extended: true
 
+      # When using PostCSS/Node tooling
+      # - name: Setup Node (for PostCSS)
+      #   uses: actions/setup-node@v4
+      #   with:
+      #     node-version: "20"
+      # - name: Install front-end deps
+      #   run: npm ci
+
       - name: Build site
-        run: hugo --minify
+        run: |
+          hugo --minify
+          test -d public && [ "$(ls -A public)" ] || (echo "ERROR: public/ is empty" && exit 1)
 
-      # Start ssh-agent and load your private key from Actions secret
-      - name: Start ssh-agent and add key
-        uses: webfactory/ssh-agent@v0.9.0
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          role-to-assume: ${{ env.ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      # Trust your server's host key (pre-pinned via ssh-keyscan)
-      - name: Write known_hosts
+      - name: Upload build to S3
         run: |
-          mkdir -p ~/.ssh
-          printf "%s\n" "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
-          chmod 644 ~/.ssh/known_hosts
+          aws s3 sync ./public "s3://${S3_BUCKET}/${S3_PREFIX}/" --delete
 
-      - name: Rsync to VPS
-        env:
-          SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          WEBROOT:  ${{ secrets.WEBROOT }}
+      - name: Trigger SSM RunCommand on EC2 to pull from S3
+        id: sendcmd
         run: |
-          rsync -az --delete ./public/ "${SSH_USER}@${SSH_HOST}:${WEBROOT}/"
+          CMD_ID=$(aws ssm send-command \
+            --instance-ids "${EC2_INSTANCE_ID}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Sync site from S3 to Apache docroot" \
+            --parameters commands="[
+              \"set -euo pipefail\",
+              \"aws s3 sync s3://${S3_BUCKET}/${S3_PREFIX}/ ${DOCROOT} --delete\",
+              \"sudo apachectl -t && sudo systemctl reload apache2\"
+            ]" \
+            --query "Command.CommandId" --output text)
+          echo "command_id=${CMD_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for SSM command to finish
+        run: |
+          for i in {1..30}; do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "${{ steps.sendcmd.outputs.command_id }}" \
+              --instance-id "${EC2_INSTANCE_ID}" \
+              --query "Status" --output text || true)
+            echo "SSM status: $STATUS"
+            if [ "$STATUS" = "Success" ]; then exit 0; fi
+            if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then exit 1; fi
+            sleep 5
+          done
+          echo "SSM command did not complete in time"; exit 1
