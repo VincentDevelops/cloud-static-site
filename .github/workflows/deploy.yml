@@ -3,7 +3,7 @@ name: Deploy static site to EC2 via S3 + SSM
 on:
   pull_request:
     branches: [ "main" ]
-    types: [ closed ]   # run when PRs to main are closed (merged)
+    types: [ closed ]
 
 concurrency:
   group: deploy-prod
@@ -14,14 +14,15 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: ${{ secrets.AWSRegion }}            # or use repo/environment Variables
-  S3_BUCKET: ${{ secrets.S3BucketName }}          # bucket name isn’t sensitive; a Variable is fine too
-  S3_PREFIX: site/prod/current                    # path inside the bucket; not a secret
+  AWS_REGION: ${{ secrets.AWSRegion }}
+  S3_BUCKET: ${{ secrets.S3BucketName }}
+  S3_PREFIX: site/prod/current
   DOCROOT: /var/www/vincentdevelops.com
-  ROLE_TO_ASSUME: ${{ secrets.AWSAssumedRole }}   # arn:aws:iam::<acct>:role/github-actions
-  EC2_INSTANCE_ID: ${{ secrets.AWSInstanceID }}  # or target by tag instead
-  HUGO_VERSION: "0.151.0"                         # pin to match your local Hugo
- 
+  ROLE_TO_ASSUME: ${{ secrets.AWSAssumedRole }}
+  EC2_INSTANCE_ID: ${{ secrets.AWSInstanceID }}
+  HUGO_VERSION: "0.151.0"
+  SITE_DIR: cloud-static-site/hugo/vincentdevelops
+
 jobs:
   deploy:
     if: >
@@ -34,8 +35,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          submodules: false # true if using a submodule theme
 
       - name: Install Hugo (extended)
         uses: peaceiris/actions-hugo@v3
@@ -43,15 +42,8 @@ jobs:
           hugo-version: ${{ env.HUGO_VERSION }}
           extended: true
 
-      # When using PostCSS/Node tooling
-      # - name: Setup Node (for PostCSS)
-      #   uses: actions/setup-node@v4
-      #   with:
-      #     node-version: "20"
-      # - name: Install front-end deps
-      #   run: npm ci
-
       - name: Build site
+        working-directory: ${{ env.SITE_DIR }}
         run: |
           hugo --minify
           test -d public && [ "$(ls -A public)" ] || (echo "ERROR: public/ is empty" && exit 1)
@@ -63,6 +55,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Upload build to S3
+        working-directory: ${{ env.SITE_DIR }}
         run: |
           aws s3 sync ./public "s3://${S3_BUCKET}/${S3_PREFIX}/" --delete
 
@@ -94,3 +87,9 @@ jobs:
             sleep 5
           done
           echo "SSM command did not complete in time"; exit 1
+
+
+
+
+
+
