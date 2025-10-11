@@ -21,7 +21,8 @@ env:
   ROLE_TO_ASSUME: ${{ secrets.AWSAssumedRole }}
   EC2_INSTANCE_ID: ${{ secrets.AWSInstanceID }}
   HUGO_VERSION: "0.151.0"
-  SITE_DIR: cloud-static-site/hugo/vincentdevelops
+  SITE_DIR: hugo/vincentdevelops
+
 
 jobs:
   deploy:
