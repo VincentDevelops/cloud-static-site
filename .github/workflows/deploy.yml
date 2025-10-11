@@ -66,14 +66,16 @@ jobs:
           CMD_ID=$(aws ssm send-command \
             --instance-ids "${EC2_INSTANCE_ID}" \
             --document-name "AWS-RunShellScript" \
-            --comment "Sync site from S3 to Apache docroot" \
+            --comment "Sync site from S3 to web docroot" \
             --parameters commands="[
-              \"set -euo pipefail\",
-              \"aws s3 sync s3://${S3_BUCKET}/${S3_PREFIX}/ ${DOCROOT} --delete\",
-              \"sudo apachectl -t && sudo systemctl reload apache2\"
+              \"set -eu\",
+              \"aws s3 sync s3://${S3_BUCKET}/${S3_PREFIX}/ ${DOCROOT} --delete --region ${AWS_REGION}\",
+              \"sudo apachectl -t || sudo httpd -t\",
+              \"sudo systemctl reload apache2 || sudo systemctl reload httpd\"
             ]" \
             --query "Command.CommandId" --output text)
           echo "command_id=${CMD_ID}" >> "$GITHUB_OUTPUT"
+
 
       - name: Wait for SSM command to finish
         run: |
